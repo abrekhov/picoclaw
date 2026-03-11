@@ -112,6 +112,10 @@ func DetectTranscriber(cfg *config.Config) Transcriber {
 		return nil
 	}
 
+	if strings.EqualFold(strings.TrimSpace(cfg.Voice.Provider), "yandex") && cfg.Voice.Yandex.APIKey != "" {
+		return NewYandexSTTTranscriber(cfg.Voice.Yandex.APIKey, cfg.Voice.Yandex.FolderID, cfg.Voice.Yandex.Lang)
+	}
+
 	if modelName := strings.TrimSpace(cfg.Voice.ModelName); modelName != "" {
 		modelCfg, err := cfg.GetModelConfig(modelName)
 		if err == nil {

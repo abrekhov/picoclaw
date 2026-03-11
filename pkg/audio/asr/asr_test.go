@@ -14,6 +14,12 @@ func TestDetectTranscriber(t *testing.T) {
 		wantName string
 	}{
 		{
+			name:     "explicit yandex provider",
+			cfg:      &config.Config{Voice: config.VoiceConfig{Provider: "yandex", Yandex: config.YandexSTTConfig{APIKey: "sk-y"}}},
+			wantNil:  false,
+			wantName: "yandex",
+		},
+		{
 			name:    "no config",
 			cfg:     &config.Config{},
 			wantNil: true,

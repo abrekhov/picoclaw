@@ -607,9 +607,17 @@ type DevicesConfig struct {
 }
 
 type VoiceConfig struct {
-	ModelName         string `json:"model_name,omitempty"     env:"PICOCLAW_VOICE_MODEL_NAME"`
-	TTSModelName      string `json:"tts_model_name,omitempty" env:"PICOCLAW_VOICE_TTS_MODEL_NAME"`
-	EchoTranscription bool   `json:"echo_transcription"       env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	ModelName         string          `json:"model_name,omitempty"     env:"PICOCLAW_VOICE_MODEL_NAME"`
+	TTSModelName      string          `json:"tts_model_name,omitempty" env:"PICOCLAW_VOICE_TTS_MODEL_NAME"`
+	EchoTranscription bool            `json:"echo_transcription"       env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	Provider          string          `json:"provider" env:"PICOCLAW_VOICE_PROVIDER"`
+	Yandex            YandexSTTConfig `json:"yandex"`
+}
+
+type YandexSTTConfig struct {
+	APIKey   string `json:"api_key"   env:"PICOCLAW_VOICE_YANDEX_API_KEY"`
+	FolderID string `json:"folder_id" env:"PICOCLAW_VOICE_YANDEX_FOLDER_ID"`
+	Lang     string `json:"lang"      env:"PICOCLAW_VOICE_YANDEX_LANG"`
 }
 
 // ModelConfig represents a model-centric provider configuration.
