@@ -166,6 +166,18 @@ func (t *GroqTranscriber) Name() string {
 // DetectTranscriber inspects cfg and returns the appropriate Transcriber, or
 // nil if no supported transcription provider is configured.
 func DetectTranscriber(cfg *config.Config) Transcriber {
+	// Explicit voice provider selection (voice.provider).
+	switch strings.ToLower(strings.TrimSpace(cfg.Voice.Provider)) {
+	case "yandex":
+		if cfg.Voice.Yandex.APIKey != "" {
+			return NewYandexSTTTranscriber(cfg.Voice.Yandex.APIKey, cfg.Voice.Yandex.FolderID, cfg.Voice.Yandex.Lang)
+		}
+	case "groq":
+		if key := cfg.Providers.Groq.APIKey; key != "" {
+			return NewGroqTranscriber(key)
+		}
+	}
+
 	// Direct Groq provider config takes priority.
 	if key := cfg.Providers.Groq.APIKey; key != "" {
 		return NewGroqTranscriber(key)

@@ -474,7 +474,9 @@ type DevicesConfig struct {
 }
 
 type VoiceConfig struct {
-	EchoTranscription bool `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	EchoTranscription bool            `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	Provider          string          `json:"provider" env:"PICOCLAW_VOICE_PROVIDER"`
+	Yandex            YandexSTTConfig `json:"yandex"`
 }
 
 type ProvidersConfig struct {
@@ -546,6 +548,12 @@ type ProviderConfig struct {
 	RequestTimeout int    `json:"request_timeout,omitempty" env:"PICOCLAW_PROVIDERS_{{.Name}}_REQUEST_TIMEOUT"`
 	AuthMethod     string `json:"auth_method,omitempty"     env:"PICOCLAW_PROVIDERS_{{.Name}}_AUTH_METHOD"`
 	ConnectMode    string `json:"connect_mode,omitempty"    env:"PICOCLAW_PROVIDERS_{{.Name}}_CONNECT_MODE"` // only for Github Copilot, `stdio` or `grpc`
+}
+
+type YandexSTTConfig struct {
+	APIKey   string `json:"api_key"   env:"PICOCLAW_VOICE_YANDEX_API_KEY"`
+	FolderID string `json:"folder_id" env:"PICOCLAW_VOICE_YANDEX_FOLDER_ID"`
+	Lang     string `json:"lang"      env:"PICOCLAW_VOICE_YANDEX_LANG"`
 }
 
 type OpenAIProviderConfig struct {
