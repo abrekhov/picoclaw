@@ -7,53 +7,35 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
-func TestYandexTranscriber_PollSuccess(t *testing.T) {
+func TestYandexTranscriber_RecognizeSuccess(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "voice.ogg")
 	if err := os.WriteFile(p, []byte("fake-ogg"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	var polls atomic.Int32
-	opID := "op-123"
+	var gotAuth string
+	var gotFolderID string
+	var gotFormat string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/speech/stt/v2/longRunningRecognize":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": opID})
-			return
-		case r.Method == http.MethodGet && r.URL.Path == "/operations/"+opID:
-			n := polls.Add(1)
-			if n < 2 {
-				_ = json.NewEncoder(w).Encode(map[string]any{"done": false})
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"done": true,
-				"result": map[string]any{
-					"chunks": []any{
-						map[string]any{"alternatives": []any{map[string]any{"text": "privet"}}},
-						map[string]any{"alternatives": []any{map[string]any{"text": "mir"}}},
-					},
-				},
-			})
-			return
-		default:
+		gotAuth = r.Header.Get("Authorization")
+		gotFolderID = r.Header.Get("x-folder-id")
+		gotFormat = r.URL.Query().Get("format")
+
+		if r.Method != http.MethodPost || r.URL.Path != "/speech/v1/stt:recognize" {
 			http.NotFound(w, r)
 			return
 		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": "privet mir"})
 	}))
 	defer srv.Close()
 
-	tr := NewYandexSTTTranscriber("sk-test", "", "ru-RU")
+	tr := NewYandexSTTTranscriber("sk-test", "folder-123", "ru-RU")
 	tr.apiBase = srv.URL
-	tr.pollInterval = 1 * time.Millisecond
-	tr.pollTimeout = 200 * time.Millisecond
 
 	resp, err := tr.Transcribe(context.Background(), p)
 	if err != nil {
@@ -62,36 +44,65 @@ func TestYandexTranscriber_PollSuccess(t *testing.T) {
 	if resp.Text != "privet mir" {
 		t.Fatalf("Text=%q, want %q", resp.Text, "privet mir")
 	}
+	if gotAuth != "Api-Key sk-test" {
+		t.Fatalf("Authorization=%q", gotAuth)
+	}
+	if gotFolderID != "folder-123" {
+		t.Fatalf("x-folder-id=%q", gotFolderID)
+	}
+	if gotFormat != "oggopus" {
+		t.Fatalf("format=%q", gotFormat)
+	}
 }
 
-func TestYandexTranscriber_OperationError(t *testing.T) {
+func TestYandexTranscriber_RecognizeError(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "voice.ogg")
-	_ = os.WriteFile(p, []byte("fake-ogg"), 0o644)
+	if err := os.WriteFile(p, []byte("fake-ogg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	opID := "op-err"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": opID})
-			return
-		}
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"done":  true,
-				"error": map[string]any{"message": "bad audio"},
-			})
-			return
-		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error_code":    "UNAUTHORIZED",
+			"error_message": "bad credentials",
+		})
 	}))
 	defer srv.Close()
 
 	tr := NewYandexSTTTranscriber("sk-test", "", "ru-RU")
 	tr.apiBase = srv.URL
-	tr.pollInterval = 1 * time.Millisecond
-	tr.pollTimeout = 200 * time.Millisecond
 
 	_, err := tr.Transcribe(context.Background(), p)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestYandexSTTFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/tmp/a.ogg", want: "oggopus"},
+		{path: "/tmp/a.oga", want: "oggopus"},
+		{path: "/tmp/a.opus", want: "oggopus"},
+		{path: "/tmp/a.mp3", want: "mp3"},
+		{path: "/tmp/a.wav", want: "lpcm"},
+	}
+
+	for _, tt := range tests {
+		got, err := yandexSTTFormat(tt.path)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tt.path, err)
+		}
+		if got != tt.want {
+			t.Fatalf("%s: got %q want %q", tt.path, got, tt.want)
+		}
+	}
+
+	if _, err := yandexSTTFormat("/tmp/a.m4a"); err == nil {
+		t.Fatal("expected unsupported format error")
 	}
 }

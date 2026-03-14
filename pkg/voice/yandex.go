@@ -3,12 +3,12 @@ package voice
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,13 +16,8 @@ import (
 )
 
 // YandexSTTTranscriber implements Transcriber using Yandex Cloud SpeechKit STT.
-// It uses the long-running recognition API (v2):
-//   POST /speech/stt/v2/longRunningRecognize
-// then polls:
-//   GET /operations/{id}
-//
-// For Telegram voice notes, audio is typically OGG/OPUS, so we send audioEncoding=OGG_OPUS.
-// If you feed other formats, you may need to adjust encoding and/or add normalization.
+// Telegram voice notes are typically OGG/Opus, which works well with the
+// synchronous API used here.
 
 type YandexSTTTranscriber struct {
 	apiKey     string
@@ -30,28 +25,12 @@ type YandexSTTTranscriber struct {
 	lang       string
 	apiBase    string
 	httpClient *http.Client
-
-	// polling
-	pollInterval time.Duration
-	pollTimeout  time.Duration
 }
 
-type yandexLROStartResp struct {
-	ID string `json:"id"`
-}
-
-type yandexOperationResp struct {
-	Done  bool `json:"done"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-	Result *struct {
-		Chunks []struct {
-			Alternatives []struct {
-				Text string `json:"text"`
-			} `json:"alternatives"`
-		} `json:"chunks"`
-	} `json:"result,omitempty"`
+type yandexRecognizeResp struct {
+	Result       string `json:"result"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 func NewYandexSTTTranscriber(apiKey, folderID, lang string) *YandexSTTTranscriber {
@@ -64,8 +43,6 @@ func NewYandexSTTTranscriber(apiKey, folderID, lang string) *YandexSTTTranscribe
 		lang:         lang,
 		apiBase:      "https://stt.api.cloud.yandex.net",
 		httpClient:   &http.Client{Timeout: 60 * time.Second},
-		pollInterval: 500 * time.Millisecond,
-		pollTimeout:  60 * time.Second,
 	}
 }
 
@@ -81,101 +58,56 @@ func (t *YandexSTTTranscriber) Transcribe(ctx context.Context, audioFilePath str
 		return nil, fmt.Errorf("read audio file: %w", err)
 	}
 
-	cfg := map[string]any{
-		"specification": map[string]any{
-			"languageCode":  t.lang,
-			"audioEncoding": "OGG_OPUS",
-		},
-	}
-	if t.folderID != "" {
-		cfg["folderId"] = t.folderID
-	}
-
-	payload := map[string]any{
-		"config": cfg,
-		"audio": map[string]any{
-			"content": base64.StdEncoding.EncodeToString(b),
-		},
-	}
-
-	body, err := json.Marshal(payload)
+	format, err := yandexSTTFormat(audioFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, err
 	}
-
-	startURL := t.apiBase + "/speech/stt/v2/longRunningRecognize"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, startURL, bytes.NewReader(body))
+	reqURL := fmt.Sprintf("%s/speech/v1/stt:recognize?lang=%s&format=%s", t.apiBase, t.lang, format)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Api-Key "+t.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if t.folderID != "" {
+		req.Header.Set("x-folder-id", t.folderID)
+	}
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("start recognition: %w", err)
+		return nil, fmt.Errorf("recognize audio: %w", err)
 	}
 	defer resp.Body.Close()
 
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		logger.ErrorCF("voice", "Yandex STT start error", map[string]any{"status": resp.StatusCode, "resp": string(rb)})
-		return nil, fmt.Errorf("yandex stt start: http %d: %s", resp.StatusCode, string(rb))
+		logger.ErrorCF("voice", "Yandex STT request error", map[string]any{"status": resp.StatusCode, "resp": string(rb)})
+		return nil, fmt.Errorf("yandex stt recognize: http %d: %s", resp.StatusCode, string(rb))
 	}
 
-	var start yandexLROStartResp
-	if err := json.Unmarshal(rb, &start); err != nil {
-		return nil, fmt.Errorf("parse start response: %w", err)
+	var out yandexRecognizeResp
+	if err := json.Unmarshal(rb, &out); err != nil {
+		return nil, fmt.Errorf("parse recognition response: %w", err)
 	}
-	if start.ID == "" {
-		return nil, fmt.Errorf("yandex stt: empty operation id")
+	if out.ErrorCode != "" || out.ErrorMessage != "" {
+		return nil, fmt.Errorf("yandex stt error: %s %s", out.ErrorCode, out.ErrorMessage)
 	}
+	text := strings.TrimSpace(out.Result)
+	if text == "" {
+		return &TranscriptionResponse{Text: ""}, nil
+	}
+	return &TranscriptionResponse{Text: text}, nil
+}
 
-	pollURL := t.apiBase + "/operations/" + start.ID
-	deadline := time.Now().Add(t.pollTimeout)
-	for {
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("yandex stt: timeout waiting operation")
-		}
-
-		preq, _ := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
-		preq.Header.Set("Authorization", "Api-Key "+t.apiKey)
-
-		presp, err := t.httpClient.Do(preq)
-		if err != nil {
-			return nil, fmt.Errorf("poll operation: %w", err)
-		}
-		prb, _ := io.ReadAll(presp.Body)
-		presp.Body.Close()
-		if presp.StatusCode < 200 || presp.StatusCode >= 300 {
-			return nil, fmt.Errorf("yandex stt poll: http %d: %s", presp.StatusCode, string(prb))
-		}
-
-		var op yandexOperationResp
-		if err := json.Unmarshal(prb, &op); err != nil {
-			return nil, fmt.Errorf("parse operation response: %w", err)
-		}
-
-		if !op.Done {
-			time.Sleep(t.pollInterval)
-			continue
-		}
-
-		if op.Error != nil {
-			return nil, fmt.Errorf("yandex stt operation error: %s", op.Error.Message)
-		}
-
-		var texts []string
-		if op.Result != nil {
-			for _, ch := range op.Result.Chunks {
-				if len(ch.Alternatives) > 0 {
-					if t := strings.TrimSpace(ch.Alternatives[0].Text); t != "" {
-						texts = append(texts, t)
-					}
-				}
-			}
-		}
-
-		return &TranscriptionResponse{Text: strings.Join(texts, " ")}, nil
+func yandexSTTFormat(audioFilePath string) (string, error) {
+	switch strings.ToLower(filepath.Ext(audioFilePath)) {
+	case ".ogg", ".oga", ".opus":
+		return "oggopus", nil
+	case ".mp3":
+		return "mp3", nil
+	case ".wav":
+		return "lpcm", nil
+	default:
+		return "", fmt.Errorf("yandex stt: unsupported audio format for %q", filepath.Base(audioFilePath))
 	}
 }
